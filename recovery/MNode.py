@@ -124,7 +124,13 @@ class DataInfo(object):
         
         self.dirty = True
         return True
-    
+
+    def migarate(self,srcip,dstip):
+        if srcip is not None:
+            self.value.remove(srcip)
+        if dstip is not None:
+            self.value.append(dstip)        
+
     @staticmethod
     def _normalize_name(name):
         """Convert a name to all lowercase
@@ -263,6 +269,9 @@ class NodeInfo:
     def nodeid(self):
         return self.nodeid
 
+    def migarate(self,okey,src,dst):
+        self.data_dict[okey].migarate(src,dst)
+
     def __getitem__(self,key):
         name = DataInfo._normalize_name(key)
         return self.data_dict.get(name)
@@ -400,6 +409,8 @@ class MNode:
         for w in _nlist:
             self.node_dict[w].inc_visit()
 
+    def get_chunk(self,okey):
+        return self.node_dict[okey]
 
     def download_begin(self,dataid):
         return self.get_data(dataid)
@@ -428,7 +439,7 @@ class MNode:
             for w in obj[key]:
                 self.node_dict[w].remove(key,obj[key],size)
                 
-    def migarate_node(self,nodeid):
+    def migarate_begin(self,nodeid):
         
         _nlist = []
         _nlist.append(nodeid)
@@ -436,7 +447,10 @@ class MNode:
             k = self.get_available_node(_nlist,0)
             if k is not None:
                 return self.node_dict[k]
-
+            
+    def migarate_end(self,okey,nodeid,srcid,dstid):
+         """ update Management node's id"""
+         self.node_dict[nodeid].migarate(okey,srcid,dstid)
 
     def get_available_node(self,exclude,priority = DEFAULT_PRIORITY):
         """get the highest priority node then choose it 
