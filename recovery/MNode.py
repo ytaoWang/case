@@ -6,6 +6,7 @@
 #
 
 import random
+# from ChNode import ChunkInfo
 
 class DataInfo(object):
     """A class for Data that save data info.
@@ -164,6 +165,10 @@ class ResourceInfo:
     RES_DEFAULT_CPU = 0.1
     RES_DEFAULT_VISIT = 1
     # priority share
+    RES_PRIORITY_NEG = 10
+    RES_PRIORITY_UP = 45
+    RES_PRIORITY_NORMAL = 50
+
     RES_PRIORITY_CHECK = 100
     RES_PRIORITY_DISK = 0.35
     RES_PRIORITY_NETWORK = -0.2
@@ -251,17 +256,24 @@ class NodeInfo:
     NODE_UP = (1<<3) # 8
     NODE_NORMAL = (1<<4) # 16
 
-    def __init__(self,nodeid,status = NODE_UP):
-        """ should keep the Chunk Agent in here? """
+    def __init__(self,nodeid,node,status = NODE_UP):
+        """ should keep the Chunk Agent in here? data_dict key is DataInfo"""
         self.nodeid = nodeid
-        self.status = status
+        self._status = status
         self.data_dict = {}
+        self.node = node
         self.res_info = ResourceInfo()
         self.dirty = False
 
     @property
+    def node(self):
+        return self.node
+    @property
     def status(self):
-        return '%s' % self.status 
+        return self._status 
+    @status.setter
+    def status(self,value):
+        self._status = value
     @property
     def dirty(self):
         return self.dirty
@@ -271,6 +283,9 @@ class NodeInfo:
 
     def migarate(self,okey,src,dst):
         self.data_dict[okey].migarate(src,dst)
+
+    def get(self,key,default=None):
+        return self.data_dict.get(key,default)
 
     def __getitem__(self,key):
         name = DataInfo._normalize_name(key)
@@ -283,7 +298,7 @@ class NodeInfo:
     def __len__(self):
         return len(self.data_dict)
 
-    def remove(self,key,size):
+    def remove(self,key,size=0):
         name = DataInfo._normalize_name(key)
         try:
             self.data_dict.pop(name)
@@ -307,8 +322,19 @@ class NodeInfo:
     def update_item(self,key,value):
         """update item of resource info"""
         self.res_info[key] = value
+
     def get_priority(self):
-        return self.res_info.get_priority()
+        
+        v = 0
+        if self.status == NodeInfo.NODE_UP:
+            v = ResourceInfo.RES_PRIORITY_UP
+        elif self.status == NodeInfo.NODE_NORMAL:
+            v = ResourceInfo.RES_PRIORITY_NORMAL
+        elif self.status == NodeInfo.NODE_NEG:
+            v = ResourceInfo.RES_PRIORITY_NEG
+        else:
+            v = 0
+        return v + self.res_info.get_priority()
 
     def get_res(self):
         return self.res_info.get()
@@ -322,13 +348,14 @@ class NodeInfo:
 class MNode:
     """Management Node implementation,Manage all online nodes,choose the most 
     priority node,migrate node,repair node to other nodes,field:
-    <dict>(nodeid,NodeInfo),<dict>(dataid,DataInfo)
-
+    <dict>(nodeid,ChunkInfo),<dict>(dataid,DataInfo)
+    
+    >>> from ChNode import ChunkInfo
     >>> h = MNode()
     >>> d = DataInfo({"abcdef":"192.168.1.23,192.168.1.24"})
-    >>> n1 = NodeInfo("192.168.1.23",NodeInfo.NODE_NORMAL)
-    >>> n2 = NodeInfo("192.168.1.24",NodeInfo.NODE_NORMAL)
-    >>> n3 = NodeInfo("192.168.1.25",NodeInfo.NODE_NORMAL)
+    >>> n1 = ChunkInfo("192.168.1.23",NodeInfo.NODE_NORMAL)
+    >>> n2 = ChunkInfo("192.168.1.24",NodeInfo.NODE_NORMAL)
+    >>> n3 = ChunkInfo("192.168.1.25",NodeInfo.NODE_NORMAL)
     >>> n1.update_item('disk',0)
     >>> n2.update_item('disk',100000)
     >>> h.add(d)
@@ -340,9 +367,11 @@ class MNode:
     >>> n4
     ['192.168.1.23', '192.168.1.24']
     >>> h.download_end("192.168.1.23")
+    >>> print len(h.need_migarate_positive())
+    1
     >>> for w in h.need_migarate_positive():
     ...     print w.get_priority()
-    80.69
+    125.69
     >>> print(h.need_migarate_negative())
     []
     """
@@ -355,9 +384,10 @@ class MNode:
         self.data_dict = {}
 
     def add(self,obj):
+        from ChNode import ChunkInfo
         if isinstance(obj,DataInfo):
             self.data_dict[obj.keys()] = obj
-        elif isinstance(obj,NodeInfo):
+        elif isinstance(obj,ChunkInfo):
             self.node_dict[obj.nodeid] = obj
         else:
             pass
@@ -404,7 +434,7 @@ class MNode:
         """ commit dataInfo and save it"""
         # convert _nlist to string
         strlist = ','.join(_nlist)
-        data_info = DataInfo(dict(dataid,strlist))
+        data_info = DataInfo({dataid:strlist})
         self.add(data_info)
         for w in _nlist:
             self.node_dict[w].inc_visit()
@@ -424,9 +454,9 @@ class MNode:
     def update_begin(self,dataid):
         return self.download_begin(dataid)
     
-    def update_end(self,okey,size,nlist):
+    def update_end(self,okey,osize,nkey,nsize,nlist):
         for w in nlist:
-            self.node_dict[w].update_data(okey,size,okey)        
+            self.node_dict[w].update_data(nkey,nsize,okey,osize)        
 
     def remove_begin(self,key):
         obj = self.data_dict[key]
@@ -460,7 +490,8 @@ class MNode:
         start = 0
         # get all normal status node
         for k,v in self.node_dict.iteritems():
-            if v.status == NodeInfo.NODE_NORMAL or v.status == NodeInfo.NODE_UP:
+            if v.status in (NodeInfo.NODE_NORMAL,NodeInfo.NODE_UP,
+                            NodeInfo.NODE_REPAIR_NEG):
                 a_list.append(v)
         
         # sort by priority (ununseless)
@@ -491,7 +522,7 @@ class MNode:
         averagep = 0.0
 
         for k,v in self.node_dict.iteritems():
-            if v.status == NodeInfo.NODE_NORMAL:
+            if v.status == NodeInfo.NODE_NORMAL or v.status == NodeInfo.NODE_UP:
                 a_list.append(v)
             
         #a_list = filter(lambda v:v.status == NodeInfo.NODE_NORMAL,self.node_dict)
@@ -521,17 +552,19 @@ class MNode:
             if priority  > 100 * average priority
             should migarate positive
         """
-        averagep = 0
         averagep = self.average()
 
         a_list = []
-
+        pos_list = []
+        
         for k,v in self.node_dict.iteritems():
-            if v.status == NodeInfo.NODE_NORMAL:
+            if v.status == NodeInfo.NODE_NORMAL or v.status == NodeInfo.NODE_UP:
                 a_list.append(v)
         
+        # print 'average:',averagep
+        
         if averagep == 0:
-            return None
+            return pos_list
 
         #print "average:",averagep,",total",MNode.GAP_POSITIVE * averagep
 
@@ -552,9 +585,9 @@ class MNode:
             should migarate positive
         """
         averagep = self.average()
-        
+        pos_list = []
         if averagep == 0:
-            return None
+            return pos_list
 
         a_list = []
 
@@ -568,7 +601,15 @@ class MNode:
                                     < averagep),a_list)
         
         return pos_list
-    
+
+    def check_migarate(self):
+        
+        for k,v in self.node_dict.iteritems():
+            str(v)
+
+        self.check_migarate_positive()
+        self.check_migarate_negative()
+
     def check_migarate_positive(self):
         """ If need migarate positive,then start migarate directly"""
         plist = []
@@ -578,9 +619,8 @@ class MNode:
             # should migarate positive
             # report the chunk node migarate positive
             for v in plist:
-                pass
+                v.set_positive()
             
-        pass
 
     def check_migarate_negative(self):
         """ If need migarate negative,then start migarate directly"""
@@ -591,8 +631,7 @@ class MNode:
             # should migarate negative
             # report the chunk node migarate negative
             for v in plist:
-                pass
-        pass
+                v.set_negative()
     
 
 def doctests():

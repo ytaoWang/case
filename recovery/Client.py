@@ -6,6 +6,9 @@
 #
 # 
 
+from MNode import MNode
+from ChNode import ChunkInfo
+import random
 class FileInfo(object):
     """ File information like size,id,number 
 
@@ -28,6 +31,7 @@ class FileInfo(object):
         self._strid = strid
         self._size = size
         self._num = 0
+        self._nlist = []
 
     @property
     def num(self):
@@ -53,6 +57,14 @@ class FileInfo(object):
     def size(self,value):
         self._size = value
 
+    @property
+    def nlist(self):
+        return self._nlist
+
+    @nlist.setter
+    def nlist(self,value):
+        self._nlist = value
+
 class Client(object):
     """ also for testing to client send file operations to server"""
     LENGTH_DATA_ID = 20
@@ -63,6 +75,7 @@ class Client(object):
         self.prefix = prefix
         self.upload_list = {}
         self.upload_end_list = {}
+        self.update_end_list = {}
         self.master = master
 
     def upload(self):
@@ -71,7 +84,7 @@ class Client(object):
         strid = self.prefix
 
         for i in range(Client.LENGTH_DATA_ID - b):
-            strid += 'a' - 'A' + random.uniform(0,25)
+            strid = strid + chr(int(random.uniform(65,122)))
             
         f = FileInfo(strid,random.gauss(2,2))
         self.upload_list[strid] = f
@@ -79,8 +92,8 @@ class Client(object):
         
         for w in _nlist:
             obj = self.master.get_chunk(w)
-            obj.upload(strid,random.gauss(2,2)) # file size 2G random
-            self.upload_list.append(strid)      
+            obj.upload(strid,random.gauss(2,2),self) # file size 2G random
+            self.upload_list[strid] = f
         
 
 
@@ -88,17 +101,20 @@ class Client(object):
         
         f = self.upload_list[key]
         f.num += 1
-        
+        f.nlist.append(nodeid)
+
         if f.num == Client.LENGTH_DEFAULT_COPY:
-            self.upload_list.remove(key)
+            self.upload_list.pop(key)
             self.upload_end_list[key] = f
+            # print f.nlist
+            self.master.upload_end(key,f.nlist)
             # report to master it's over
             
 
     def download(self):
         _v = self.upload_end_list.values()
-        strid = _v[random.uniform(0,len(_v)-1)]
-        _nlist = self.master.download_begin(obj.strid)
+        strid = _v[random.uniform(0,len(_v)-1)].strid
+        _nlist = self.master.download_begin(strid)
 
         for w in _nlist:
             c = self.master.get_chunk(w)
@@ -106,14 +122,43 @@ class Client(object):
                 break
     
     def download_end(self,key,size,nodeid):
-        pass
+        self.master.download_end(key)
     
     def update(self):
-        pass
+        _v = self.upload_end_list.values()
+        f = _v[random.uniform(0,len(v)-1)]
+        _nlist = self.master.update_begin(f.strid)
+        f.size = random.gauss(2,2)
+        f.nlist = _nlist
+        self.update_end_list.append(f)
+        for w in _nlist:
+            c = self.master.get_chunk(w)
+            if not c.update(f.strid,f.size,self):
+                print "fail to update file:",f.strid
+            
     
     def update_end(self,nodeid,size):
-        pass
-
+        f = self.update_end_list[nodeid]
+        f.num += 1
+        if f.num == len(f.nlist):
+            self.update_end_list.remove(f)
+            self.upload_end_list[nodeid] = f
+            osize = f.size
+            f.size = size
+            self.master.update_end(f.strid,osize,f.strid,nsize,[nodeid])
+    
+    def remove(self):
+        _v = self.upload_end_list.values()
+        f = _v[random.uniform(0,len(v) - 1)]
+        strid = f.strid
+        obj = self.master.remove_begin(strid)
+        for w in obj[strid]:
+            c = self.master.get_chunk(w)
+            if not c.remove(strid):
+                print "fail to remove file:",strid
+        
+        self.master.remove_end(strid,f.size)
+        self.upload_end_list.remove(strid)
 
 def doctests():
     import doctest

@@ -10,9 +10,11 @@
 #
 #
 
-import MNode
 from time import time
 import random
+import heapq
+
+from MNode import NodeInfo,MNode,ResourceInfo
 
 class RequestInfo(object):
     """ client send a request to user,then Chunk Server should save the req
@@ -81,7 +83,16 @@ class CDataInfo(object):
         self._status = CDataInfo.DATA_STATUS_NORMAL
         self._nodeid = None
         self._dirty = False
+        self._visit = 0
         pass
+
+    @property
+    def visit(self):
+        return self._visit
+
+    @visit.setter
+    def visit(self,value):
+        self._visit = value
 
     @property
     def dirty(self):
@@ -120,6 +131,7 @@ class CDataInfo(object):
 class ChunkInfo(object):
     """ Chunk server implementation"""
 
+    NODE_DEFAULT_TIME = 60
     COST_REQ_UPLOAD_CPU  = 0.15
     COST_REQ_DOWNLOAD_CPU = 0.15
     COST_REQ_UPDATE_CPU = 0.15
@@ -134,18 +146,32 @@ class ChunkInfo(object):
         self.req_list = []
         self.node_list = [] # migarate node list
         self.migarate_list = [] # migarate data list now
-        self.res_dict['disk'] = ResourceInfo.RES_DEFAULT_DISK
-        self.res_dict['network'] = ResourceInfo.RES_DEFAULT_NETWORK
-        self.res_dict['cpu'] = ResourceInfo.RES_DEFAULT_CPU
-        self.res_dict['visit'] = ResourceInfo.RES_DEFAULT_VISIT
+        self.node = NodeInfo(nodeid,self.status)
         self.master = master
         
+    def get_priority(self):
+        return self.node.get_priority()
+
+    def inc_visit(self):
+        return self.node.inc_visit()
+
     def net_rate(self,size):
         return int(size/ChunkInfo.RATE_NET)
     
     def get_min(self):
-        return min(heapq.nsmallest(1,self.req_list,key=lambda x:x['time']),
-                   heapq.nsmallest(1,self.node_list,key = lambda x:x['time']))
+        print "request list:",len(self.req_list),",node list:",len(self.node_list)
+
+        import sys
+        rmin = sys.maxint if len(self.req_list) is 0 else heapq.nsmallest(1,self.req_list,key=lambda x:x['time'])[0]['time']
+        nmin = sys.maxint if len(self.node_list) is 0 else heapq.nsmallest(1,self.node_list,key=lambda x:x['time'])[0]['time']
+
+        return min(int(rmin),int(nmin))
+        # return int(min(heapq.nsmallest(1,
+        #                               self.req_list,key=lambda x:x['time'])[0] 
+        #               if not len(self.req_list) is 0 else 0,
+        #               heapq.nsmallest(1,
+        #                               self.node_list,key = lambda x:x['time'])[0]
+        #               if not len(self.node_list) is 0 else 0))
     
     def load(self):
         """ load data from db or file"""
@@ -153,42 +179,78 @@ class ChunkInfo(object):
     
     def inc_node_overload(self,cost,size = 0):
         self.__inc_overload(cost,size)
+
+    @staticmethod
+    def do_check(w):
+        w.do_action()
         
     def do_action(self):
         """ check timer event then implement it"""
         now = self.get_min()        
 
-        while now == heapq.nsmallest(1,self.req_list,key=lambda x:x['time']):
-            obj = heappop(self.req_list)
+        while True:
+            if len(self.req_list) is 0:
+                break
+            rmin = heapq.nsmallest(1,self.req_list,key=lambda x:x['time'])[0]['time']
+            if rmin - now > 1:
+                break
+
+            obj = heapq.heappop(self.req_list)
             if obj['op'] == RequestInfo.CHUNK_REQ_UPLOAD:
-                obj.upload_end(obj['dataid'],obj['size'],self.nodeid)
+                obj['obj'].upload_end(obj['dataid'],obj['size'],self.nodeid)
             elif obj['op'] == RequestInfo.CHUNK_REQ_DOWNLOAD:
-                obj.download_end(obj['dataid'],obj['size'],self.nodeid)
+                obj['obj'].download_end(obj['dataid'],obj['size'],self.nodeid)
             elif obj['op'] == RequestInfo.CHUNK_REQ_UPDATE:
-                obj.upload_end(obj['dataid'],obj['size'],self.nodeid)
+                obj['obj'].upload_end(obj['dataid'],obj['size'],self.nodeid)
             else:
                 pass
 
-        while now == heapq.nsmallest(1,self.node_list,key=lambda x:x['time']):
-            obj = heappop(self.node_list)
+        while True:
+
+            if len(self.node_list) is 0:
+                break
+            nmin = heapq.nsmallest(1,self.node_list,key=lambda x:x['time'])[0]['time']
+            if nmin - now > 1:
+                break
+
+            obj = heapq.heappop(self.node_list)
             obj.migarate_end(obj['dataid'],obj['size'],self.nodeid)
 
+    
+    def __str__(self):
+        
+        print "node id:",self.nodeid
 
+        for k,v in self.data_dict.iteritems():
+            print "key:",k,",size:",v.size
+            
+        return 'end'
+
+    def update_item(self,key,value):
+        self.node.update_item(key,value)
+    
     def dec_node_overload(self,cost,size = 0):
         self.dec_overload(cost,size)
     
     def __inc_overload(self,cost,size = 0):
-        self.res_dict['cpu'] += cost
-        self.res_dict['disk'] += size
-        self.res_dict['network'] += gauss(50,50)
+        res_dict = self.node.get_res()
+        self.node.update_item('cpu',res_dict['cpu'] + cost)
+        self.node.update_item('disk',res_dict['disk'] + size)
+        self.node.update_item('network',res_dict['network'] + random.gauss(50,50))
+        # self.node['cpu'] += cost
+        # self.node['disk'] += size
+        # self.node['network'] += gauss(50,50)
 
     def inc_overload(self,cost,size = 0):
-        self.res_dict['visit'] += 1
-        __inc_overload(cost,size)
+        self.node.inc_visit()
+        self.__inc_overload(cost,size)
 
     def dec_overload(self,cost,size = 0):
-        self.res_dict['cpu'] -= cost
-        self.res_dict['network'] -= gauss(50,50)
+        res_dict = self.node.get_res()
+        self.node.update_item('cpu',res_dict['cpu'] - cost)
+        self.node.update_item('network',res_dict['network'] - gauss(50,50))
+        self.node.update_item('disk',res_dict['disk'] - size)
+        # self.node['network'] -= gauss(50,50)
         
     def migarate_node(self,nodeid,size,obj=None):
         """ migarate_node"""
@@ -209,12 +271,19 @@ class ChunkInfo(object):
         
     def upload(self,nodeid,size,obj,buf=None):
         """ upload file start timer to prompt when it's arrival"""
-        req = RequestInfo(ChunkInfo.CHUNK_REQ_UPLOAD)
+        c = CDataInfo()
+        c.size = size
+        c.nodeid = nodeid
+        req = RequestInfo(RequestInfo.CHUNK_REQ_UPLOAD)
         req['size'] = size
         req['dataid'] = nodeid
         req['buf'] = buf
         req['obj'] = obj
         req['time'] += self.net_rate(size)
+
+        print 'register timer:',req['time'],',relative:',req['time'] - time()
+        self.node[nodeid] = c
+        self.data_dict[nodeid] = c
         self.req_list.append(req)
         self.inc_overload(ChunkInfo.COST_REQ_UPLOAD_CPU,size)
 
@@ -241,8 +310,8 @@ class ChunkInfo(object):
 
     def remove(self,nodeid):
         """ remove file"""
-        
-        if self.data_dict.get(nodeid) is None:
+        v = self.node.get(nodeid)
+        if v is None:
             return False
         
         req = RequestInfo(ChunkInfo.CHUNK_REQ_REMOVE)
@@ -251,11 +320,14 @@ class ChunkInfo(object):
             self.data_dict_get(nodeid).size is None else 0
 
         self.inc_overload(ChunkInfo.COST_REQ_REMOVE_CPU,0)
+        self.node.remove(nodeid,v.size)
+        self.data_dict.pop(nodeid)
         return True
 
     def update(self,nodeid,size,obj,buf=None):
         
-        if self.data_dict.get(nodeid) is None:
+        v = self.node.get(nodeid)
+        if v is None:
             return False
 
         req = RequestInfo(ChunkInfo.CHUNK_REQ_UPDATE)
@@ -266,7 +338,9 @@ class ChunkInfo(object):
         req['time'] += self.net_rate(size)
         self.inc_overload(ChunkInfo.COST_REQ_UPDATE_CPU,size)
         self.req_list.append(req)
-
+        v.size = size
+        self.data_dict[nodeid] = v
+        self.node[nodeid] = v
         # register timer in here
         return True
 
@@ -274,12 +348,14 @@ class ChunkInfo(object):
         if not self.status in (NodeInfo.NODE_REPAIR_POS,
                                NodeInfo.NODE_REPAIR_NEG):
             self.status = NodeInfo.NODE_REPAIR_POS
+            self.node.status = self.status
             self.migarate_positive()
 
     def set_negative(self):
         if not self.status in (NodeInfo.NODE_REPAIR_POS,
                                   NodeInfo.NODE_REPAIR_NEG):
             self.status = NodeInfo.NODE_REPAIR_POS
+            self.node.status = self.status
             self.migarate_positive()
 
     def __migarate(self):
