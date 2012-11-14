@@ -9,6 +9,8 @@
 from MNode import MNode
 from ChNode import ChunkInfo
 import random
+import logging
+
 class FileInfo(object):
     """ File information like size,id,number 
 
@@ -82,17 +84,18 @@ class Client(object):
 
         b = len(self.prefix)
         strid = self.prefix
-
+        import string
         for i in range(Client.LENGTH_DATA_ID - b):
-            strid = strid + chr(int(random.uniform(65,122)))
+            strid = strid + random.choice(string.ascii_letters + 
+                                          string.digits)
             
-        f = FileInfo(strid,random.gauss(2,2))
+        f = FileInfo(strid,random.uniform(0,10))
         self.upload_list[strid] = f
-        _nlist = self.master.upload_begin(random.gauss(0,MNode.DEFAULT_PRIORITY))
+        _nlist = self.master.upload_begin(int(random.uniform(0,MNode.DEFAULT_PRIORITY)))
         
         for w in _nlist:
             obj = self.master.get_chunk(w)
-            obj.upload(strid,random.gauss(2,2),self) # file size 2G random
+            obj.upload(strid,f.size,self) # file size 2G random
             self.upload_list[strid] = f
         
 
@@ -113,8 +116,16 @@ class Client(object):
 
     def download(self):
         _v = self.upload_end_list.values()
-        strid = _v[random.uniform(0,len(_v)-1)].strid
+        
+        if len(_v) < 2:
+            logging.info("upload in progress.")
+            return
+        
+        strid = _v[int(random.uniform(0,len(_v)-2))].strid
         _nlist = self.master.download_begin(strid)
+        if _nlist is None:
+            logging.info("fail to download key:%s",strid)
+            return
 
         for w in _nlist:
             c = self.master.get_chunk(w)
@@ -126,39 +137,62 @@ class Client(object):
     
     def update(self):
         _v = self.upload_end_list.values()
-        f = _v[random.uniform(0,len(v)-1)]
+        if len(_v) < 2:
+            return
+
+        f = _v[int(random.uniform(0,len(_v)-1))]
         _nlist = self.master.update_begin(f.strid)
-        f.size = random.gauss(2,2)
-        f.nlist = _nlist
-        self.update_end_list.append(f)
+        if _nlist is None:
+            logging.info("fail to update key:%s",f.strid)
+            return
+        f.size = random.uniform(2,2)
+        import copy
+        f.nlist = copy.copy(_nlist)
+        self.update_end_list[f.strid] = f
         for w in _nlist:
             c = self.master.get_chunk(w)
             if not c.update(f.strid,f.size,self):
                 print "fail to update file:",f.strid
             
     
-    def update_end(self,nodeid,size):
-        f = self.update_end_list[nodeid]
+    def update_end(self,strid,size,nodeid):
+        f = self.update_end_list[strid]
         f.num += 1
         if f.num == len(f.nlist):
             self.update_end_list.remove(f)
-            self.upload_end_list[nodeid] = f
+            self.upload_end_list[strid] = f
             osize = f.size
             f.size = size
             self.master.update_end(f.strid,osize,f.strid,nsize,[nodeid])
     
     def remove(self):
         _v = self.upload_end_list.values()
-        f = _v[random.uniform(0,len(v) - 1)]
+        if len(_v) is 0:
+            return
+        
+        f = _v[int(random.uniform(0,len(_v) - 1))]
         strid = f.strid
         obj = self.master.remove_begin(strid)
-        for w in obj[strid]:
+        print 'remove key list:',obj,',type:',type(obj)
+        if not isinstance(obj,list):
+            logging.info("fail to remove key:%s",strid)
+            print 'fail to remove key:',strid
+            return
+
+        #i = 0
+        #while i < len(obj):
+        for w in obj:
+            #w = obj[i]
+            print 'remove key:',strid,',nodeid:',w
             c = self.master.get_chunk(w)
             if not c.remove(strid):
                 print "fail to remove file:",strid
-        
-        self.master.remove_end(strid,f.size)
-        self.upload_end_list.remove(strid)
+            else:
+                self.master.remove_end(strid,c.nodeid)
+                # print "client remove key:",strid,',nodeid:',c.nodeid
+            
+        #self.master.remove_end(strid,f.size)
+        self.upload_end_list.pop(strid)
 
 def doctests():
     import doctest

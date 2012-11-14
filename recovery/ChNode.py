@@ -196,12 +196,29 @@ class ChunkInfo(object):
                 break
 
             obj = heapq.heappop(self.req_list)
+            strid = obj['dataid']
+
             if obj['op'] == RequestInfo.CHUNK_REQ_UPLOAD:
                 obj['obj'].upload_end(obj['dataid'],obj['size'],self.nodeid)
+                c = CDataInfo()
+                c.size = obj['size']
+                c.nodeid = strid
+                self.node[strid] = c
+                self.data_dict[strid] = c
+
             elif obj['op'] == RequestInfo.CHUNK_REQ_DOWNLOAD:
                 obj['obj'].download_end(obj['dataid'],obj['size'],self.nodeid)
+
             elif obj['op'] == RequestInfo.CHUNK_REQ_UPDATE:
-                obj['obj'].upload_end(obj['dataid'],obj['size'],self.nodeid)
+                obj['obj'].update_end(obj['dataid'],obj['size'],self.nodeid)
+                v = self.node.get(strid)
+                print 'update file key:',strid
+                if v is None:
+                    print 'fail to update file key:',strid
+                    return
+                v.size = obj['size']
+                self.data_dict[strid] = v
+                self.node[strid] = v
             else:
                 pass
 
@@ -214,12 +231,15 @@ class ChunkInfo(object):
                 break
 
             obj = heapq.heappop(self.node_list)
-            obj.migarate_end(obj['dataid'],obj['size'],self.nodeid)
+            if not obj['obj'] is None:
+                obj['obj'].migarate_end(obj['dataid'],obj['size'],self.nodeid)
 
-    
+    def __len__(self):
+        return len(self.data_dict)
+            
     def __str__(self):
         
-        print "node id:",self.nodeid
+        print "node id:",self.nodeid,',len:',len(self.data_dict)
 
         for k,v in self.data_dict.iteritems():
             print "key:",k,",size:",v.size
@@ -236,7 +256,7 @@ class ChunkInfo(object):
         res_dict = self.node.get_res()
         self.node.update_item('cpu',res_dict['cpu'] + cost)
         self.node.update_item('disk',res_dict['disk'] + size)
-        self.node.update_item('network',res_dict['network'] + random.gauss(50,50))
+        self.node.update_item('network',res_dict['network'] + random.uniform(0,100))
         # self.node['cpu'] += cost
         # self.node['disk'] += size
         # self.node['network'] += gauss(50,50)
@@ -248,13 +268,13 @@ class ChunkInfo(object):
     def dec_overload(self,cost,size = 0):
         res_dict = self.node.get_res()
         self.node.update_item('cpu',res_dict['cpu'] - cost)
-        self.node.update_item('network',res_dict['network'] - gauss(50,50))
+        self.node.update_item('network',res_dict['network'] - random.uniform(0,100))
         self.node.update_item('disk',res_dict['disk'] - size)
         # self.node['network'] -= gauss(50,50)
         
     def migarate_node(self,nodeid,size,obj=None):
         """ migarate_node"""
-        req = RequestInfo(ChunkInfo.CHUNK_REQ_UPLOAD)
+        req = RequestInfo(RequestInfo.CHUNK_REQ_UPLOAD)
         req['size'] = size
         req['dataid'] = nodeid
         req['buf'] = buf
@@ -271,9 +291,9 @@ class ChunkInfo(object):
         
     def upload(self,nodeid,size,obj,buf=None):
         """ upload file start timer to prompt when it's arrival"""
-        c = CDataInfo()
-        c.size = size
-        c.nodeid = nodeid
+        #c = CDataInfo()
+        #c.size = size
+        #c.nodeid = nodeid
         req = RequestInfo(RequestInfo.CHUNK_REQ_UPLOAD)
         req['size'] = size
         req['dataid'] = nodeid
@@ -281,9 +301,9 @@ class ChunkInfo(object):
         req['obj'] = obj
         req['time'] += self.net_rate(size)
 
-        print 'register timer:',req['time'],',relative:',req['time'] - time()
-        self.node[nodeid] = c
-        self.data_dict[nodeid] = c
+        # print 'register timer:',req['time'],',relative:',req['time'] - time()
+        #self.node[nodeid] = c
+        #self.data_dict[nodeid] = c
         self.req_list.append(req)
         self.inc_overload(ChunkInfo.COST_REQ_UPLOAD_CPU,size)
 
@@ -297,13 +317,13 @@ class ChunkInfo(object):
         if self.data_dict.get(nodeid) is None:
             return False
 
-        req = RequestInfo(ChunkInfo.CHUNK_REQ_DOWNLOAD)        
+        req = RequestInfo(RequestInfo.CHUNK_REQ_DOWNLOAD)        
         req['dataid'] = nodeid
         req['size'] = self.data_dict.get(nodeid).size
         req['obj'] = obj
         self.req_list.append(req)
         self.inc_overload(ChunkInfo.COST_REQ_DOWNLOAD_CPU,req['size'])
-        req['time'] += self.net_rate(size)
+        req['time'] += self.net_rate(req['size'])
         # register timer in here when finish to report client,like RPC
         # self.timer.add_timer(int(time() + self.net_rate(size)))
         return True
@@ -314,10 +334,10 @@ class ChunkInfo(object):
         if v is None:
             return False
         
-        req = RequestInfo(ChunkInfo.CHUNK_REQ_REMOVE)
-        req['dataid'] = nodeid        
-        req['size'] = self.data_dict.get(nodeid) if \
-            self.data_dict_get(nodeid).size is None else 0
+        #req = RequestInfo(RequestInfo.CHUNK_REQ_REMOVE)
+        #req['dataid'] = nodeid        
+        #req['size'] = self.data_dict.get(nodeid) if \
+        #    self.data_dict.get(nodeid).size is None else 0
 
         self.inc_overload(ChunkInfo.COST_REQ_REMOVE_CPU,0)
         self.node.remove(nodeid,v.size)
@@ -330,7 +350,7 @@ class ChunkInfo(object):
         if v is None:
             return False
 
-        req = RequestInfo(ChunkInfo.CHUNK_REQ_UPDATE)
+        req = RequestInfo(RequestInfo.CHUNK_REQ_UPDATE)
         req['dataid'] = nodeid
         req['size'] = size
         req['buf'] = buf
@@ -338,9 +358,9 @@ class ChunkInfo(object):
         req['time'] += self.net_rate(size)
         self.inc_overload(ChunkInfo.COST_REQ_UPDATE_CPU,size)
         self.req_list.append(req)
-        v.size = size
-        self.data_dict[nodeid] = v
-        self.node[nodeid] = v
+        #v.size = size
+        #self.data_dict[nodeid] = v
+        #self.node[nodeid] = v
         # register timer in here
         return True
 
@@ -357,20 +377,27 @@ class ChunkInfo(object):
             self.status = NodeInfo.NODE_REPAIR_POS
             self.node.status = self.status
             self.migarate_positive()
+    
+    def down(self):
+        """ set chunk node is down"""
+        self.status = NodeInfo.NODE_DOWN
+        self.node.status = self.status
+        self.master.report_down(self)
 
+            
     def __migarate(self):
         """ migarate node carefully"""
 
         for v in self.migarate_list:
             dst = self.master.migarate_node(self.node)
             dst.migarate_node(v.nodeid,v.size,self)
-            v.status = DATA_STATUS_MIGARATE
+            v.status = CDataInfo.DATA_STATUS_MIGARATE
 
         for k,v in self.data_dict:
             dst = self.master.migarate_begin(self.nodeid)
             # should read some data in here for migarting
             dst.migarate_node(v.nodeid,v.size,self)
-            v.status = DATA_STATUS_MIGARATE
+            v.status = CDataInfo.DATA_STATUS_MIGARATE
             self.migarate_list.append(v)
     
     def need_migarate(self):
@@ -381,7 +408,7 @@ class ChunkInfo(object):
     def migarate_end(self,nodeid,dstid):
         """ migarate node callback"""
         v = self.data_dict[nodeid]
-        v.status = DATA_STATUS_NORMAL
+        v.status = CDataInfo.DATA_STATUS_NORMAL
         self.master.migarate_end(nodeid,self.nodeid,dstid)
         self.migarate_list.remove(v)
 

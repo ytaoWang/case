@@ -7,6 +7,7 @@
 
 import random
 # from ChNode import ChunkInfo
+import logging
 
 class DataInfo(object):
     """A class for Data that save data info.
@@ -66,12 +67,19 @@ class DataInfo(object):
         if self.key == DataInfo._normalize_name(key):
             for v in self.value:
                 self.value.remove(v)
-        return self.add(key,value)
-            
+        return self.add(key,value)        
+    
     def __getitem__(self,key):
         if self.key != DataInfo._normalize_name(key):
             return None
         return self.value
+    
+    def __len__(self):
+        return len(self.value)
+    
+    def remove(self,key,nodeid):
+        if self.exist(key,nodeid):
+            self.value.remove(nodeid)
 
     # new public function
     def get_count(self,key):
@@ -131,16 +139,17 @@ class DataInfo(object):
             self.value.remove(srcip)
         if dstip is not None:
             self.value.append(dstip)        
-
+        print 'successful migarate key:',self.value,',src:',srcip,',dst:',dstip
+            
     @staticmethod
     def _normalize_name(name):
         """Convert a name to all lowercase
         
         >>> DataInfo._normalize_name("aAAbc12")
-        'aaabc12'
+        'aAAbc12'
         """
         if name:
-            return name.lower()
+            return name
 
 class ResourceInfo:
     """Node's resource info:disk,network,cpu,visit number etc
@@ -386,6 +395,7 @@ class MNode:
     def add(self,obj):
         from ChNode import ChunkInfo
         if isinstance(obj,DataInfo):
+            # print 'successful to add key:',obj.keys()
             self.data_dict[obj.keys()] = obj
         elif isinstance(obj,ChunkInfo):
             self.node_dict[obj.nodeid] = obj
@@ -419,6 +429,10 @@ class MNode:
         self.data_dict[key][key] = value
     
     def get_data(self,key):
+        if self.data_dict.get(key) is None:
+            import logging
+            logging.error("fail to get key:%s in MNode",key)
+            return None
         return self.data_dict.get(key).get(key)
 
     def upload_begin(self,priority = DEFAULT_PRIORITY):
@@ -434,6 +448,7 @@ class MNode:
         """ commit dataInfo and save it"""
         # convert _nlist to string
         strlist = ','.join(_nlist)
+        print 'upload key successful,key:',dataid
         data_info = DataInfo({dataid:strlist})
         self.add(data_info)
         for w in _nlist:
@@ -448,6 +463,7 @@ class MNode:
     def download_end(self,key):
         try:
             self.node_dict[key].inc_visit()
+            print 'successful download key:',key
         except KeyError:
             pass
     
@@ -455,20 +471,36 @@ class MNode:
         return self.download_begin(dataid)
     
     def update_end(self,okey,osize,nkey,nsize,nlist):
-        for w in nlist:
-            self.node_dict[w].update_data(nkey,nsize,okey,osize)        
+        for w in iter(nlist):
+            self.node_dict[w].update_data(nkey,nsize,okey,osize)
+            print 'successful update key:',okey
 
     def remove_begin(self,key):
-        obj = self.data_dict[key]
-        return obj[key]
+        obj = self.data_dict.get(key)
+        if obj is None:
+            logging.error("fail to remove key:%s",key)
+            return None
+        return obj.get(key)
             
-    def remove_end(self,key,size):
+    def remove_end(self,key,nodeid):
         """ Remove given file key"""
-        obj = self.data_dict[key]
-        if obj is not None:
-            for w in obj[key]:
-                self.node_dict[w].remove(key,obj[key],size)
+        d = self.data_dict[key]
+        if len(d[key]) == 1:
+            self.data_dict.pop(key)
+            #print 'successful remove key:',key
+        else:
+            self.data_dict[key].remove(key,nodeid)
+            #print 'successful remove key:',key,',len:',len(d[key])
                 
+
+    def report_down(self,node):
+        """ chunk node is down,migarate positive now"""
+        src = node.nodeid
+        
+        for k,v in node.data_dict:
+            dst = self.migarate_begin(src)
+            dst.migarate_node(k,v.size)
+
     def migarate_begin(self,nodeid):
         
         _nlist = []
@@ -481,6 +513,7 @@ class MNode:
     def migarate_end(self,okey,nodeid,srcid,dstid):
          """ update Management node's id"""
          self.node_dict[nodeid].migarate(okey,srcid,dstid)
+         
 
     def get_available_node(self,exclude,priority = DEFAULT_PRIORITY):
         """get the highest priority node then choose it 
@@ -531,7 +564,8 @@ class MNode:
         a_list.sort(lambda x,y:int(x.get_priority() - y.get_priority()))
         
         #map((lambda x:print x.get_priority()),a_list)
-
+        
+        
         s,t = 0,0
         for v in a_list:
             s += v.get_priority()
@@ -540,10 +574,10 @@ class MNode:
         if t == 0:
             return t
 
-        #print "sum:",s,"total:",t,s/t
-
         averagep = s/t
-                
+        
+        print 'average:',averagep,',min:',a_list[0].get_priority(),'max:',a_list[len(a_list)-1].get_priority()
+        
         return averagep
 
     # priority select and migrate positive and negative
@@ -574,6 +608,8 @@ class MNode:
         pos_list = filter(lambda x:(x.get_priority() * MNode.GAP_POSITIVE
                                     < averagep),a_list)
 
+        # check copy number if less than 3,should migarate positive
+        
         #print "pos_list:",pos_list
 
         return pos_list
@@ -604,8 +640,19 @@ class MNode:
 
     def check_migarate(self):
         
+        total = 0
+        for k,v in self.data_dict.iteritems():
+            print 'key:',k,',nodeid:',v[k]
+            total += len(v[k])
+        
+        
+        length = 0
+
         for k,v in self.node_dict.iteritems():
+            length += len(v)
             str(v)
+            
+        print 'master key:',len(self.data_dict),',total num:',total,',all data sum in chunk node:',length
 
         self.check_migarate_positive()
         self.check_migarate_negative()
@@ -618,7 +665,9 @@ class MNode:
         if plist is not None:
             # should migarate positive
             # report the chunk node migarate positive
+
             for v in plist:
+                print 'migarate positive v.nodeid:',v.nodeid
                 v.set_positive()
             
 
@@ -631,6 +680,7 @@ class MNode:
             # should migarate negative
             # report the chunk node migarate negative
             for v in plist:
+                print 'migarate negative v.nodeid:',v.nodeid
                 v.set_negative()
     
 
