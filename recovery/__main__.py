@@ -5,6 +5,7 @@ from ChNode import ChunkInfo
 from Client import Client
 from time import time
 from random import random
+from MNode import NodeInfo
 
 def upload(nlist,num):
     """ upload file num """
@@ -31,11 +32,25 @@ def remove(nlist,num):
             c.remove()
     print 'remove key num:',num
     
+def up(*nlist):
+    for w in nlist:
+        if w.status == NodeInfo.NODE_DOWN or w.node.status == NodeInfo.NODE_DOWN:
+            w.status = NodeInfo.NODE_UP
+            w.node.status = w.status
+
 def down(*nlist):
     """ Chunk node is down"""
     c = random.choice(nlist)
     print 'nodeid:',c.nodeid,' is down'
     c.down()
+
+def add_chunk(nlist,num,master):
+    for w in range(next,next+num):
+        strid = str(w)
+        c = ChunkInfo(strid,master)
+        print 'add new chunk node into server:%s,priority:%s' % (strid,c.get_priority())
+        master.add(c)
+        nlist.append(c)
 
 PRIORITY_CHUNK = 2
 PRIORITY_MASTER = 1
@@ -48,6 +63,8 @@ NUM_UPDATE = 10
 NUM_REMOVE = 2
 NUM_DOWNLOAD = 2
 
+next = 0
+
 if __name__ == "__main__":
     
     master = MNode()
@@ -58,11 +75,12 @@ if __name__ == "__main__":
         client = Client(master,NUM_CLIENT,"abcd")
         clist.append(client)
 
-    for w in range(NUM_CHUNK):
+    for w in range(next,next + NUM_CHUNK):
         strid = str(w)
         c = ChunkInfo(strid,master)
         master.add(c)
         cclist.append(c)
+        next = next + 1
         
     for w in range(NUM_CHUNK):
         print master.get_chunk(str(w)).nodeid
@@ -100,10 +118,14 @@ if __name__ == "__main__":
                     break
         #s.enter(int(random.uniform(0,40)),PRIORITY_CLIENT,upload,(clist,4))
         s.enter(90,PRIORITY_CLIENT,download,(clist,int(random.uniform(0,50))))
-        s.enter(90,PRIORITY_CLIENT,update,(clist,int(random.uniform(0,3))))
-        s.enter(90,PRIORITY_CLIENT,remove,(clist,int(random.uniform(0,10))))
+        s.enter(90,PRIORITY_CLIENT,update,(clist,int(random.uniform(0,30))))
+        s.enter(60,PRIORITY_CLIENT,remove,(clist,int(random.uniform(0,3))))
         s.enter(60,PRIORITY_MASTER,master.check_migarate,())
+        s.enter(150,PRIORITY_CHUNK,add_chunk,(cclist,
+                                              int(random.uniform(0,5)),master))
         s.enter(120,PRIORITY_CHUNK,down,cclist)
+        s.enter(120,PRIORITY_CHUNK,up,cclist)
+
         s.run()
         # register master to collect some info 
         

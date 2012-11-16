@@ -8,6 +8,7 @@
 import random
 # from ChNode import ChunkInfo
 import logging
+import copy
 
 class DataInfo(object):
     """A class for Data that save data info.
@@ -135,6 +136,10 @@ class DataInfo(object):
         return True
 
     def migarate(self,srcip,dstip):
+        if self.exist(self.key,dstip):
+            logging.error("key\':%s has nodeid:%s",self.key,dstip)
+            return
+
         if srcip is not None:
             self.value.remove(srcip)
         if dstip is not None:
@@ -339,7 +344,7 @@ class NodeInfo:
             v = ResourceInfo.RES_PRIORITY_UP
         elif self.status == NodeInfo.NODE_NORMAL:
             v = ResourceInfo.RES_PRIORITY_NORMAL
-        elif self.status == NodeInfo.NODE_NEG:
+        elif self.status == NodeInfo.NODE_REPAIR_NEG:
             v = ResourceInfo.RES_PRIORITY_NEG
         else:
             v = 0
@@ -385,12 +390,13 @@ class MNode:
     []
     """
     DEFAULT_PRIORITY = 10
-    GAP_POSITIVE = 100
-    GAP_NEGATIVE = 50
+    GAP_POSITIVE = 3
+    GAP_NEGATIVE = 1.5
 
     def __init__(self):
         self.node_dict = {}
         self.data_dict = {}
+        self.average_point = 0
 
     def add(self,obj):
         from ChNode import ChunkInfo
@@ -471,9 +477,11 @@ class MNode:
         return self.download_begin(dataid)
     
     def update_end(self,okey,osize,nkey,nsize,nlist):
-        for w in iter(nlist):
-            self.node_dict[w].update_data(nkey,nsize,okey,osize)
-            print 'successful update key:',okey
+        #for w in iter(nlist):
+            # self.node_dict[w].update_data(nkey,nsize,okey,osize)
+            # self.data_dict[]
+        # self.data_dict[okey].
+        print 'successful update key:',okey
 
     def remove_begin(self,key):
         obj = self.data_dict.get(key)
@@ -485,34 +493,47 @@ class MNode:
     def remove_end(self,key,nodeid):
         """ Remove given file key"""
         d = self.data_dict[key]
+        # print 'key:',key,'nodeid:',nodeid,' len:',len(d[key])
         if len(d[key]) == 1:
             self.data_dict.pop(key)
-            #print 'successful remove key:',key
+            print 'successful remove key in Master:%s' % key
         else:
             self.data_dict[key].remove(key,nodeid)
-            #print 'successful remove key:',key,',len:',len(d[key])
+            # print 'successful remove nodeid:',key,',len:',len(d[key])
                 
 
     def report_down(self,node):
         """ chunk node is down,migarate positive now"""
         src = node.nodeid
-        
-        for k,v in node.data_dict:
-            dst = self.migarate_begin(src)
-            dst.migarate_node(k,v.size)
+        node.migarate_down()
+        #for k,v in node.data_dict.iteritems():
+        #    dst = self.migarate_begin(src)
+        #    dst.migarate_node(k,v.size,src)
 
-    def migarate_begin(self,nodeid):
+    def migarate_begin(self,key):
         
+        if self.data_dict.get(key) is None:
+            logging.error("fail to get key:%s in migarate.",key)
+            return None
+
         _nlist = []
-        _nlist.append(nodeid)
-        while True:
-            k = self.get_available_node(_nlist,0)
-            if k is not None:
-                return self.node_dict[k]
+        vlist = self.data_dict[key]
+        _nlist = copy.copy(vlist.get(key))
+        print 'key:%s location:%s' % (key,_nlist)
+        k = self.get_available_node(_nlist,0)
+        if k is not None:
+            return self.node_dict[k]
+        logging.warn('migarate dst nodeid:%s is None',k)
+        return None
             
-    def migarate_end(self,okey,nodeid,srcid,dstid):
+    def migarate_end(self,key,srcid,dstid):
          """ update Management node's id"""
-         self.node_dict[nodeid].migarate(okey,srcid,dstid)
+         if self.data_dict.get(key) is None:
+             """ when some data is migarating but other is delete the data so fail to migarate"""
+             logging.error("fail to migarate node,key:%s,src:%s,dst:%s",
+                           key,srcid,dstid)
+             return
+         self.data_dict[key].migarate(srcid,dstid)
          
 
     def get_available_node(self,exclude,priority = DEFAULT_PRIORITY):
@@ -537,16 +558,20 @@ class MNode:
         # now it's choose the highest priority random
         while True:
 
-            if len(a_list) == len(exclude):
+            if len(a_list) <= len(exclude):
+                logging.warn("available node's num is equal to exclude's num")
                 return None
 
             n = random.uniform(priority,start)
             start = 0
             for k in a_list:
+                # print 'k\' id:',k.nodeid
                 if(n >= start and n <= (start + k.get_priority() + priority) and 
-                   k.nodeid not in exclude):
+                   exclude is not None and k.nodeid not in exclude):
                     return k.nodeid
                 start = start + k.get_priority() + priority
+
+        return None
 
     def average(self):
         """ average priority"""
@@ -589,28 +614,28 @@ class MNode:
         averagep = self.average()
 
         a_list = []
-        pos_list = []
-        
+
+        if averagep == 0:
+            return []
+
         for k,v in self.node_dict.iteritems():
             if v.status == NodeInfo.NODE_NORMAL or v.status == NodeInfo.NODE_UP:
+                print 'candidate in positive:',v.get_priority()
                 a_list.append(v)
         
         # print 'average:',averagep
-        
-        if averagep == 0:
-            return pos_list
 
         #print "average:",averagep,",total",MNode.GAP_POSITIVE * averagep
 
         #plist = filter(lambda x:100 * averagep <= x.get_priority(),a_list)
         #print "plist:",plist
 
-        pos_list = filter(lambda x:(x.get_priority() * MNode.GAP_POSITIVE
-                                    < averagep),a_list)
+        # priority is lower,migarate positive actively
+        pos_list = filter(lambda x:(x.get_priority() * MNode.GAP_POSITIVE <= averagep),a_list)
 
         # check copy number if less than 3,should migarate positive
         
-        #print "pos_list:",pos_list
+        print "pos_list:",pos_list
 
         return pos_list
         
@@ -621,26 +646,31 @@ class MNode:
             should migarate positive
         """
         averagep = self.average()
-        pos_list = []
+
         if averagep == 0:
-            return pos_list
+            return []
 
         a_list = []
 
         for k,v in self.node_dict.iteritems():
-            if v.status == NodeInfo.NODE_NORMAL:
+            if v.status == NodeInfo.NODE_NORMAL or v.status == NodeInfo.NODE_UP:
                 a_list.append(v)
-        
-        pos_list = filter(lambda x:(averagep 
-                                    <= x.get_priority() * MNode.GAP_NEGATIVE 
-                                    and x.get_priority() * MNode.GAP_POSITIVE 
-                                    < averagep),a_list)
-        
+                print 'candidate in negative:',v.get_priority()
+
+        #print 'migarate_negative:',a_list
+
+        # priority is lower,migrate actively
+        pos_list = filter(lambda x:(x.get_priority() * MNode.GAP_NEGATIVE <= averagep < x.get_priority() * MNode.GAP_POSITIVE),a_list)
+
+        print 'average:%s pos list:%s,min:%s,max:%s' % (averagep,pos_list,averagep*MNode.GAP_NEGATIVE,averagep * MNode.GAP_POSITIVE)
+
         return pos_list
 
     def check_migarate(self):
         
         total = 0
+        an = 0
+        aln = 0
         for k,v in self.data_dict.iteritems():
             print 'key:',k,',nodeid:',v[k]
             total += len(v[k])
@@ -650,9 +680,13 @@ class MNode:
 
         for k,v in self.node_dict.iteritems():
             length += len(v)
+            aln += 1
+            if v.status == NodeInfo.NODE_UP or v.status == NodeInfo.NODE_NORMAL:
+                an += 1
             str(v)
             
         print 'master key:',len(self.data_dict),',total num:',total,',all data sum in chunk node:',length
+        print 'available node:%s,total node:%s' % (an,aln)
 
         self.check_migarate_positive()
         self.check_migarate_negative()
@@ -662,6 +696,8 @@ class MNode:
         plist = []
         plist = self.need_migarate_positive()
         
+        print 'positive list:',plist
+
         if plist is not None:
             # should migarate positive
             # report the chunk node migarate positive
@@ -673,9 +709,11 @@ class MNode:
 
     def check_migarate_negative(self):
         """ If need migarate negative,then start migarate directly"""
-        plist = []
+        # plist = []
         plist = self.need_migarate_negative()
-        
+
+        print 'negative list:',plist
+
         if plist is not None:
             # should migarate negative
             # report the chunk node migarate negative

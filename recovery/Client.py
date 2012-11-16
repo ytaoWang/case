@@ -89,7 +89,7 @@ class Client(object):
             strid = strid + random.choice(string.ascii_letters + 
                                           string.digits)
             
-        f = FileInfo(strid,random.uniform(0,10))
+        f = FileInfo(strid,random.uniform(0,10)*1000) # file size 0~10*G
         self.upload_list[strid] = f
         _nlist = self.master.upload_begin(int(random.uniform(0,MNode.DEFAULT_PRIORITY)))
         
@@ -127,10 +127,13 @@ class Client(object):
             logging.info("fail to download key:%s",strid)
             return
 
-        for w in _nlist:
+        num = len(_nlist)
+        while num > 0:
+            w = random.choice(_nlist)
             c = self.master.get_chunk(w)
             if c.download(strid,self):
                 break
+            num -= 1
     
     def download_end(self,key,size,nodeid):
         self.master.download_end(key)
@@ -156,14 +159,18 @@ class Client(object):
             
     
     def update_end(self,strid,size,nodeid):
+        
+        if self.update_end_list.get(strid) is None:
+            return
+        
         f = self.update_end_list[strid]
         f.num += 1
         if f.num == len(f.nlist):
-            self.update_end_list.remove(f)
-            self.upload_end_list[strid] = f
+            #self.update_end_list.pop(f)
+            #self.upload_end_list[strid] = f
             osize = f.size
             f.size = size
-            self.master.update_end(f.strid,osize,f.strid,nsize,[nodeid])
+            self.master.update_end(f.strid,osize,f.strid,size,[nodeid])
     
     def remove(self):
         _v = self.upload_end_list.values()
@@ -173,22 +180,23 @@ class Client(object):
         f = _v[int(random.uniform(0,len(_v) - 1))]
         strid = f.strid
         obj = self.master.remove_begin(strid)
-        print 'remove key list:',obj,',type:',type(obj)
-        if not isinstance(obj,list):
-            logging.info("fail to remove key:%s",strid)
-            print 'fail to remove key:',strid
-            return
+        print 'remove key list:',obj,',strid:',strid
 
-        #i = 0
-        #while i < len(obj):
-        for w in obj:
-            #w = obj[i]
-            print 'remove key:',strid,',nodeid:',w
-            c = self.master.get_chunk(w)
-            if not c.remove(strid):
-                print "fail to remove file:",strid
+        if not isinstance(obj,list):
+            logging.error("fail to remove key:%s",strid)
+            return
+        vlist = []
+
+        for v in obj:
+            # print 'remove key:',strid,',nodeid:',v
+            c = self.master.get_chunk(v)
+            if c.remove(strid):
+                vlist.append(v)
             else:
-                self.master.remove_end(strid,c.nodeid)
+                logging.error('fail to remove key:%s in node:%s',strid,c.nodeid)
+
+        for v in vlist:
+            self.master.remove_end(strid,v)
                 # print "client remove key:",strid,',nodeid:',c.nodeid
             
         #self.master.remove_end(strid,f.size)

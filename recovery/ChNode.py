@@ -13,6 +13,7 @@
 from time import time
 import random
 import heapq
+import logging
 
 from MNode import NodeInfo,MNode,ResourceInfo
 
@@ -136,7 +137,7 @@ class ChunkInfo(object):
     COST_REQ_DOWNLOAD_CPU = 0.15
     COST_REQ_UPDATE_CPU = 0.15
     COST_REQ_REMOVE_CPU = 0.1
-    RATE_NET = 0.09 # assume that network rate is 90MB/s
+    RATE_NET = 90 # assume that network rate is 90MB/s
 
     def __init__(self,nodeid,master):
         self.nodeid = nodeid
@@ -148,7 +149,8 @@ class ChunkInfo(object):
         self.migarate_list = [] # migarate data list now
         self.node = NodeInfo(nodeid,self.status)
         self.master = master
-        
+        self.counter = 0 # migarate node counter
+
     def get_priority(self):
         return self.node.get_priority()
 
@@ -214,7 +216,7 @@ class ChunkInfo(object):
                 v = self.node.get(strid)
                 print 'update file key:',strid
                 if v is None:
-                    print 'fail to update file key:',strid
+                    logging.error('fail to update file key:%s,nodeid:%s',strid,self.nodeid)
                     return
                 v.size = obj['size']
                 self.data_dict[strid] = v
@@ -232,14 +234,19 @@ class ChunkInfo(object):
 
             obj = heapq.heappop(self.node_list)
             if not obj['obj'] is None:
-                obj['obj'].migarate_end(obj['dataid'],obj['size'],self.nodeid)
+                c = CDataInfo()
+                c.size = obj['size']
+                c.nodeid = obj['dataid']
+                self.node[c.nodeid] = c
+                self.data_dict[c.nodeid] = c
+                obj['obj'].migarate_end(obj['dataid'],self.nodeid)
 
     def __len__(self):
         return len(self.data_dict)
             
     def __str__(self):
         
-        print "node id:",self.nodeid,',len:',len(self.data_dict)
+        print "node id:",self.nodeid,',len:',len(self.data_dict),',priority:',self.get_priority()
 
         for k,v in self.data_dict.iteritems():
             print "key:",k,",size:",v.size
@@ -272,18 +279,24 @@ class ChunkInfo(object):
         self.node.update_item('disk',res_dict['disk'] - size)
         # self.node['network'] -= gauss(50,50)
         
+    def migarate_down(self):
+        """ node is down,migarate now"""
+        self.status = NodeInfo.NODE_DOWN
+        self.node.status = self.status
+        self.__migarate()
+
     def migarate_node(self,nodeid,size,obj=None):
         """ migarate_node"""
         req = RequestInfo(RequestInfo.CHUNK_REQ_UPLOAD)
         req['size'] = size
         req['dataid'] = nodeid
-        req['buf'] = buf
+        # req['buf'] = buf
         req['obj'] = obj
         req['time'] += self.net_rate(size)
 
         self.node_list.append(req)
         self.inc_node_overload(ChunkInfo.COST_REQ_UPLOAD_CPU,size)
-        
+        print 'migarate_node,node id:%s,from %s,key:%s' % (self.nodeid,obj.nodeid,nodeid)
 	# also need register timer to do that when finish to report another Chunk
         # assume that network rates is:90MB/s
         # obj.migarate_end(nodeid)
@@ -330,8 +343,9 @@ class ChunkInfo(object):
 
     def remove(self,nodeid):
         """ remove file"""
-        v = self.node.get(nodeid)
+        v = self.node.get(nodeid) or self.data_dict.get(nodeid)
         if v is None:
+            logging.error("fail to get key:%s",nodeid)
             return False
         
         #req = RequestInfo(RequestInfo.CHUNK_REQ_REMOVE)
@@ -346,8 +360,9 @@ class ChunkInfo(object):
 
     def update(self,nodeid,size,obj,buf=None):
         
-        v = self.node.get(nodeid)
+        v = self.data_dict.get(nodeid)
         if v is None:
+            logging.error("cannot get key:%s in node:%s",nodeid,self.nodeid)
             return False
 
         req = RequestInfo(RequestInfo.CHUNK_REQ_UPDATE)
@@ -376,7 +391,7 @@ class ChunkInfo(object):
                                   NodeInfo.NODE_REPAIR_NEG):
             self.status = NodeInfo.NODE_REPAIR_POS
             self.node.status = self.status
-            self.migarate_positive()
+            self.migarate_negative()
     
     def down(self):
         """ set chunk node is down"""
@@ -387,18 +402,24 @@ class ChunkInfo(object):
             
     def __migarate(self):
         """ migarate node carefully"""
-
         for v in self.migarate_list:
-            dst = self.master.migarate_node(self.node)
+            dst = self.master.migarate_begin(v.nodeid)
+            if dst is None:
+                continue
             dst.migarate_node(v.nodeid,v.size,self)
+            self.counter += 1
             v.status = CDataInfo.DATA_STATUS_MIGARATE
 
-        for k,v in self.data_dict:
-            dst = self.master.migarate_begin(self.nodeid)
+        for k,v in self.data_dict.iteritems():
+            dst = self.master.migarate_begin(k)
+            if dst is None:
+                logging.warn("miagarate node src:%s,dst is None",self.nodeid)
+                continue
             # should read some data in here for migarting
             dst.migarate_node(v.nodeid,v.size,self)
+            self.counter += 1
             v.status = CDataInfo.DATA_STATUS_MIGARATE
-            self.migarate_list.append(v)
+            # self.migarate_list.append(v)
     
     def need_migarate(self):
         return (self.status == NodeInfo.NODE_REPAIR_POS or 
@@ -407,10 +428,25 @@ class ChunkInfo(object):
 
     def migarate_end(self,nodeid,dstid):
         """ migarate node callback"""
+        self.counter -= 1
+        if self.data_dict.get(nodeid) is None:
+            logging.error('fail to migarage node nodeid:%s,src:%s,dst:%s',nodeid,self.nodeid,dstid)
+            return
+
         v = self.data_dict[nodeid]
         v.status = CDataInfo.DATA_STATUS_NORMAL
-        self.master.migarate_end(nodeid,self.nodeid,dstid)
-        self.migarate_list.remove(v)
+        print 'migarate src:',self.nodeid,',dst id:',dstid
+        self.master.migarate_end(nodeid,None,dstid)
+        if self.counter <= 0 and (self.status == NodeInfo.NODE_REPAIR_POS or 
+                                  self.status == NodeInfo.NODE_REPAIR_NEG):
+            self.status = NodeInfo.NODE_NORMAL
+            self.node.status = self.status
+            self.counter = 0
+
+        try:
+            self.migarate_list.remove(v)
+        except Exception:
+            pass
 
     def migarate_positive(self):
         self.master.update_node_status(self.nodeid,self.status)
